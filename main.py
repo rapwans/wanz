@@ -2,130 +2,104 @@ import requests
 import time
 from datetime import datetime
 
-# ====== SETTINGS ======
-BOT_TOKEN = "8425064399:AAGGaKgFri-GDISq3BYgxG9IsS_UyCOx18Q"
-CHAT_ID = "5770287675"
-
-COINDCX_MARKET_URL = "https://api.coindcx.com/exchange/v1/markets_details"
-COINDCX_TICKER_URL = "https://api.coindcx.com/exchange/ticker"
-
-CHECK_INTERVAL = 60  # seconds (1 minute)
-PRICE_CHANGE_THRESHOLD = 3.0  # %
-VOLUME_CHANGE_THRESHOLD = 50.0  # %
+# ========================
+# CONFIG
+# ========================
+BOT_TOKEN = "8425064399:AAGGaKgFri-GDISq3BYgxG9IsS_UyCOx18Q"  # your Telegram bot token
+CHAT_ID = "5770287675"  # your Telegram chat ID
+INTERVAL = 60  # check every 1 minute
+PUMP_THRESHOLD = 3  # % price increase to trigger alert
+VOLUME_MULTIPLIER = 2  # volume multiplier to detect pumps
 
 
-# ====== FUNCTIONS ======
-def send_telegram_message(message: str):
-    """Send message to Telegram"""
+# ========================
+# TELEGRAM FUNCTIONS
+# ========================
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message}
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": message}
-        r = requests.post(url, json=payload)
-        if r.status_code != 200:
-            print(f"Telegram send error: {r.text}")
+        requests.post(url, json=payload)
     except Exception as e:
-        print(f"Telegram error: {e}")
+        print(f"Error sending Telegram message: {e}")
 
 
+# ========================
+# COINDCX API FUNCTIONS
+# ========================
 def get_coindcx_markets():
-    """Fetch CoinDCX market details"""
+    url = "https://api.coindcx.com/exchange/v1/markets_details"
     try:
-        response = requests.get(COINDCX_MARKET_URL)
-        response.raise_for_status()
+        response = requests.get(url)
         markets = response.json()
-
-        if not markets:
-            print("No market data received")
-            return {}
-
-        # Debug keys from first entry
-        print("Market keys example:", markets[0].keys())
-
-        # Filter only USDT/INR pairs
-        usdt_pairs = [
-            m for m in markets
-            if m.get("target_currency_short_name") in ["USDT", "INR"]
-        ]
-
-        # Flexible key selection
-        return {
-            m.get("market") or m.get("coindcx_name") or m.get("symbol"): m
-            for m in usdt_pairs
-            if m.get("market") or m.get("coindcx_name") or m.get("symbol")
-        }
+        return [m for m in markets if m['target_currency_short_name'] in ['USDT', 'INR']]
     except Exception as e:
-        print("Error fetching markets:", e)
-        return {}
+        print(f"Error fetching markets: {e}")
+        return []
 
 
-def get_coindcx_tickers():
-    """Fetch CoinDCX tickers"""
+def get_ticker_data():
+    url = "https://api.coindcx.com/exchange/ticker"
     try:
-        response = requests.get(COINDCX_TICKER_URL)
-        response.raise_for_status()
+        response = requests.get(url)
         return response.json()
     except Exception as e:
-        print("Error fetching tickers:", e)
-        return {}
+        print(f"Error fetching ticker data: {e}")
+        return []
 
 
-def monitor_pumps():
-    """Main monitoring loop"""
-    markets = get_coindcx_markets()
-    if not markets:
-        print("No markets loaded, retrying in 1 minute...")
-        return
+# ========================
+# MONITOR FUNCTION
+# ========================
+def monitor_pumps(interval=INTERVAL):
+    print("Starting CoinDCX Pump Monitor...")
+    print("This program checks for abnormal volume and price movements")
+    print("Press Ctrl+C to stop monitoring")
 
-    last_data = {}
+    # Send startup notification
+    send_telegram_message("🚀 Pump Monitor Bot is now running and watching the market!")
 
-    print("Monitoring started...")
-    send_telegram_message("🚀 CoinDCX Pump Detector Started")
+    prev_data = {}
 
     while True:
-        try:
-            tickers = get_coindcx_tickers()
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        markets = get_coindcx_markets()
+        tickers = get_ticker_data()
 
-            for ticker in tickers:
-                market_name = ticker.get("market") or ticker.get("coindcx_name") or ticker.get("symbol")
-                if not market_name or market_name not in markets:
-                    continue
+        market_map = {m['coindcx_name']: m for m in markets}
 
-                try:
-                    last_price = float(ticker["last_price"])
-                    volume = float(ticker["volume"])
-                except (KeyError, ValueError, TypeError):
-                    continue
+        for ticker in tickers:
+            market_name = ticker.get('market')
+            if market_name not in market_map:
+                continue
 
-                if market_name in last_data:
-                    prev_price, prev_volume = last_data[market_name]
-                    price_change = ((last_price - prev_price) / prev_price) * 100
-                    volume_change = ((volume - prev_volume) / prev_volume) * 100 if prev_volume > 0 else 0
+            last_price = float(ticker.get('last_price', 0))
+            volume = float(ticker.get('volume', 0))
 
-                    if abs(price_change) >= PRICE_CHANGE_THRESHOLD or volume_change >= VOLUME_CHANGE_THRESHOLD:
-                        msg = (
-                            f"🚨 Pump Alert!\n"
-                            f"Coin: {market_name}\n"
-                            f"Price: {last_price:.4f} ({price_change:+.2f}%)\n"
-                            f"Volume Change: {volume_change:+.2f}%\n"
-                            f"Time: {now}"
-                        )
-                        print(msg)
-                        send_telegram_message(msg)
+            if market_name in prev_data:
+                prev_price, prev_volume = prev_data[market_name]
 
-                last_data[market_name] = (last_price, volume)
+                price_change = ((last_price - prev_price) / prev_price) * 100 if prev_price > 0 else 0
+                volume_change = (volume / prev_volume) if prev_volume > 0 else 0
 
-            time.sleep(CHECK_INTERVAL)
+                if price_change >= PUMP_THRESHOLD and volume_change >= VOLUME_MULTIPLIER:
+                    msg = (
+                        f"🚨 Pump Alert 🚨\n"
+                        f"Market: {market_name}\n"
+                        f"Price Change: {price_change:.2f}%\n"
+                        f"Volume Change: {volume_change:.2f}x\n"
+                        f"Price: {last_price}\n"
+                        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+                    print(msg)
+                    send_telegram_message(msg)
 
-        except KeyboardInterrupt:
-            print("Stopped by user.")
-            send_telegram_message("🛑 Pump Detector Stopped by User")
-            break
-        except Exception as e:
-            print("Error in monitor loop:", e)
-            time.sleep(10)
+            prev_data[market_name] = (last_price, volume)
+
+        time.sleep(interval)
 
 
+# ========================
+# MAIN
+# ========================
 if __name__ == "__main__":
-    print("Starting CoinDCX Pump Monitor...")
     monitor_pumps()
